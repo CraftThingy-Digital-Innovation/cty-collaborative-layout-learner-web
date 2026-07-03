@@ -12,7 +12,7 @@ Library ini secara dinamis mendeteksi jenis dokumen (classification), menyaring 
 
 ### Instalasi
 ```bash
-npm install @craftthingy-digital-innovation/cty-collaborative-layout-learner-web@2.0.1
+npm install @craftthingy-digital-innovation/cty-collaborative-layout-learner-web@2.0.2
 ```
 
 ### Cara Penggunaan Client-Side (Frontend)
@@ -61,18 +61,154 @@ div.addEventListener('click', () => {
 learner.refineSignature(docType, allOcrWords, imageWidth, imageHeight);
 ```
 
-### Panduan Integrasi Server-Side (PHP CodeIgniter / NodeJS)
-Untuk melengkapi sinkronisasi kolaboratif, server Anda harus menyediakan satu endpoint POST `/sync-templates`.
+### Panduan Integrasi Server-Side
 
-Sisi server menerima payload JSON:
-```json
+Keamanan data terjaga penuh karena library client **tidak pernah mengakses database secara langsung**. Seluruh koordinat dikirim via REST API aman ke server backend Anda. Anda bebas menggunakan database SQL apa saja (MySQL, SQLite, Postgres, dll.) atau sekadar menyimpannya dalam file JSON lokal.
+
+#### 1. Skema SQL Universal (Untuk Pengembang dengan Database)
+Buat tabel berikut di server database Anda saat ini:
+```sql
+CREATE TABLE layout_templates (
+    doc_type VARCHAR(100) PRIMARY KEY,
+    version INT NOT NULL DEFAULT 1,
+    template_data TEXT,    -- JSON templates koordinat spasial
+    signature_data TEXT,   -- JSON kata kunci sidik jari dokumen
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+```
+
+#### 2. Implementasi NodeJS (Express API dengan File JSON)
+Jika Anda tidak ingin membuat database baru, salin boiler-plate server Node ini:
+```javascript
+const express = require('express');
+const fs = require('fs');
+const app = express();
+app.use(express.json());
+
+const DATA_FILE = './layouts_data.json';
+if (!fs.existsSync(DATA_FILE)) {
+  fs.writeFileSync(DATA_FILE, JSON.stringify({ version: 0, templates: {}, signatures: {} }));
+}
+
+app.post('/api/sync-templates', (req, res) => {
+  const clientData = req.body;
+  const globalData = JSON.parse(fs.readFileSync(DATA_FILE));
+
+  if (clientData.version > globalData.version) {
+    // Gabungkan koordinat spasial menggunakan Moving Average (0.7 / 0.3)
+    Object.keys(clientData.templates).forEach(docType => {
+      if (!globalData.templates[docType]) {
+        globalData.templates[docType] = clientData.templates[docType];
+      } else {
+        Object.keys(clientData.templates[docType]).forEach(field => {
+          const gField = globalData.templates[docType][field];
+          const cField = clientData.templates[docType][field];
+          if (!gField) {
+            globalData.templates[docType][field] = cField;
+          } else {
+            gField.relativeX = (gField.relativeX * 0.7) + (cField.relativeX * 0.3);
+            gField.relativeY = (gField.relativeY * 0.7) + (cField.relativeY * 0.3);
+            gField.relativeW = (gField.relativeW * 0.7) + (cField.relativeW * 0.3);
+            gField.relativeH = (gField.relativeH * 0.7) + (cField.relativeH * 0.3);
+            cField.keywords.forEach(kw => {
+              if (!gField.keywords.includes(kw)) gField.keywords.push(kw);
+            });
+          }
+        });
+      }
+    });
+
+    // Gabungkan sidik jari dokumen
+    Object.keys(clientData.signatures).forEach(docType => {
+      globalData.signatures[docType] = clientData.signatures[docType];
+    });
+
+    globalData.version = clientData.version;
+    fs.writeFileSync(DATA_FILE, JSON.stringify(globalData, null, 2));
+
+    return res.json({ status: 'success', has_update: true, templates: globalData.templates, signatures: globalData.signatures, version: globalData.version });
+  }
+
+  const hasUpdate = globalData.version > clientData.version;
+  res.json({
+    status: 'success',
+    has_update: hasUpdate,
+    templates: hasUpdate ? globalData.templates : null,
+    signatures: hasUpdate ? globalData.signatures : null,
+    version: globalData.version
+  });
+});
+
+app.listen(3000, () => console.log("Server run on port 3000"));
+```
+
+#### 3. Implementasi PHP (CodeIgniter 4 Controller)
+Bagi pengembang PHP, salin logika endpoint berikut di Controller Anda:
+```php
+public function syncTemplates()
 {
-  "version": 12,
-  "templates": { ... },
-  "signatures": { ... }
+    $requestData = json_decode($this->request->getBody(), true);
+    $filePath = WRITEPATH . 'layouts_data.json';
+    
+    if (!file_exists($filePath)) {
+        file_put_contents($filePath, json_encode(['version' => 0, 'templates' => [], 'signatures' => []]));
+    }
+    
+    $globalData = json_decode(file_get_contents($filePath), true);
+    $clientVersion = $requestData['version'] ?? 0;
+    
+    if ($clientVersion > $globalData['version']) {
+        // Agregasi templates koordinat spasial
+        foreach ($requestData['templates'] as $docType => $fields) {
+            if (!isset($globalData['templates'][$docType])) {
+                $globalData['templates'][$docType] = $fields;
+            } else {
+                foreach ($fields as $field => $cConfig) {
+                    if (!isset($globalData['templates'][$docType][$field])) {
+                        $globalData['templates'][$docType][$field] = $cConfig;
+                    } else {
+                        $g = &$globalData['templates'][$docType][$field];
+                        $g['relativeX'] = ($g['relativeX'] * 0.7) + ($cConfig['relativeX'] * 0.3);
+                        $g['relativeY'] = ($g['relativeY'] * 0.7) + ($cConfig['relativeY'] * 0.3);
+                        $g['relativeW'] = ($g['relativeW'] * 0.7) + ($cConfig['relativeW'] * 0.3);
+                        $g['relativeH'] = ($g['relativeH'] * 0.7) + ($cConfig['relativeH'] * 0.3);
+                        foreach ($cConfig['keywords'] as $kw) {
+                            if (!in_array($kw, $g['keywords'])) {
+                                $g['keywords'][] = $kw;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Gabungkan data signatures
+        foreach ($requestData['signatures'] as $docType => $sig) {
+            $globalData['signatures'][$docType] = $sig;
+        }
+        
+        $globalData['version'] = $clientVersion;
+        file_put_contents($filePath, json_encode($globalData));
+        
+        return $this->response->setJSON([
+            'status' => 'success',
+            'has_update' => true,
+            'templates' => $globalData['templates'],
+            'signatures' => $globalData['signatures'],
+            'version' => $globalData['version']
+        ]);
+    }
+    
+    $hasUpdate = $globalData['version'] > $clientVersion;
+    return $this->response->setJSON([
+        'status' => 'success',
+        'has_update' => $hasUpdate,
+        'templates' => $hasUpdate ? $globalData['templates'] : null,
+        'signatures' => $hasUpdate ? $globalData['signatures'] : null,
+        'version' => $globalData['version']
+    ]);
 }
 ```
-Jika nomor versi payload client lebih tinggi, server menggabungkan koordinat rasio kotak ($x,y$) dari templat baru menggunakan **Rata-rata Bergerak (Moving Average)**, melakukan *upsert* ke database, menaikkan nomor versi global, lalu mengembalikannya sebagai respons sukses agar diunduh oleh client lain.
 
 ### Keamanan & Pemulihan Mandiri Algoritma (Self-Healing)
 Library ini dilengkapi dengan mekanisme proteksi bawaan untuk melindungi integritas model dari kesalahan manusia (human error):
@@ -95,7 +231,7 @@ This library dynamically classifies document types, filters out dynamic personal
 
 ### Installation
 ```bash
-npm install @craftthingy-digital-innovation/cty-collaborative-layout-learner-web@2.0.1
+npm install @craftthingy-digital-innovation/cty-collaborative-layout-learner-web@2.0.2
 ```
 
 ### Client-Side JavaScript Usage
@@ -144,6 +280,154 @@ div.addEventListener('click', () => {
 learner.refineSignature(docType, allOcrWords, imageWidth, imageHeight);
 ```
 
+### Server-Side Integration Guide
+Data privacy is strictly maintained because the client library **never accesses the database directly**. All coordinates are transmitted via secure REST APIs to your backend. You are free to use any SQL database (MySQL, SQLite, Postgres, etc.) or write to a local JSON file.
+
+#### 1. Universal SQL Schema (For Database Integrations)
+Create the following table inside your active database:
+```sql
+CREATE TABLE layout_templates (
+    doc_type VARCHAR(100) PRIMARY KEY,
+    version INT NOT NULL DEFAULT 1,
+    template_data TEXT,    -- JSON templates of spatial coordinates
+    signature_data TEXT,   -- JSON keywords representing the document signature
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+```
+
+#### 2. NodeJS Implementation (Express API with JSON File Storage)
+For quick setups, copy this Node server controller boilerplate:
+```javascript
+const express = require('express');
+const fs = require('fs');
+const app = express();
+app.use(express.json());
+
+const DATA_FILE = './layouts_data.json';
+if (!fs.existsSync(DATA_FILE)) {
+  fs.writeFileSync(DATA_FILE, JSON.stringify({ version: 0, templates: {}, signatures: {} }));
+}
+
+app.post('/api/sync-templates', (req, res) => {
+  const clientData = req.body;
+  const globalData = JSON.parse(fs.readFileSync(DATA_FILE));
+
+  if (clientData.version > globalData.version) {
+    // Blend spatial coordinates using moving average (0.7 / 0.3)
+    Object.keys(clientData.templates).forEach(docType => {
+      if (!globalData.templates[docType]) {
+        globalData.templates[docType] = clientData.templates[docType];
+      } else {
+        Object.keys(clientData.templates[docType]).forEach(field => {
+          const gField = globalData.templates[docType][field];
+          const cField = clientData.templates[docType][field];
+          if (!gField) {
+            globalData.templates[docType][field] = cField;
+          } else {
+            gField.relativeX = (gField.relativeX * 0.7) + (cField.relativeX * 0.3);
+            gField.relativeY = (gField.relativeY * 0.7) + (cField.relativeY * 0.3);
+            gField.relativeW = (gField.relativeW * 0.7) + (cField.relativeW * 0.3);
+            gField.relativeH = (gField.relativeH * 0.7) + (cField.relativeH * 0.3);
+            cField.keywords.forEach(kw => {
+              if (!gField.keywords.includes(kw)) gField.keywords.push(kw);
+            });
+          }
+        });
+      }
+    });
+
+    // Merge document signatures
+    Object.keys(clientData.signatures).forEach(docType => {
+      globalData.signatures[docType] = clientData.signatures[docType];
+    });
+
+    globalData.version = clientData.version;
+    fs.writeFileSync(DATA_FILE, JSON.stringify(globalData, null, 2));
+
+    return res.json({ status: 'success', has_update: true, templates: globalData.templates, signatures: globalData.signatures, version: globalData.version });
+  }
+
+  const hasUpdate = globalData.version > clientData.version;
+  res.json({
+    status: 'success',
+    has_update: hasUpdate,
+    templates: hasUpdate ? globalData.templates : null,
+    signatures: hasUpdate ? globalData.signatures : null,
+    version: globalData.version
+  });
+});
+
+app.listen(3000, () => console.log("Server running"));
+```
+
+#### 3. PHP Implementation (CodeIgniter 4 controller logic)
+For PHP stacks, use this sync templates logic in your controller:
+```php
+public function syncTemplates()
+{
+    $requestData = json_decode($this->request->getBody(), true);
+    $filePath = WRITEPATH . 'layouts_data.json';
+    
+    if (!file_exists($filePath)) {
+        file_put_contents($filePath, json_encode(['version' => 0, 'templates' => [], 'signatures' => []]));
+    }
+    
+    $globalData = json_decode(file_get_contents($filePath), true);
+    $clientVersion = $requestData['version'] ?? 0;
+    
+    if ($clientVersion > $globalData['version']) {
+        // Aggregate templates
+        foreach ($requestData['templates'] as $docType => $fields) {
+            if (!isset($globalData['templates'][$docType])) {
+                $globalData['templates'][$docType] = $fields;
+            } else {
+                foreach ($fields as $field => $cConfig) {
+                    if (!isset($globalData['templates'][$docType][$field])) {
+                        $globalData['templates'][$docType][$field] = $cConfig;
+                    } else {
+                        $g = &$globalData['templates'][$docType][$field];
+                        $g['relativeX'] = ($g['relativeX'] * 0.7) + ($cConfig['relativeX'] * 0.3);
+                        $g['relativeY'] = ($g['relativeY'] * 0.7) + ($cConfig['relativeY'] * 0.3);
+                        $g['relativeW'] = ($g['relativeW'] * 0.7) + ($cConfig['relativeW'] * 0.3);
+                        $g['relativeH'] = ($g['relativeH'] * 0.7) + ($cConfig['relativeH'] * 0.3);
+                        foreach ($cConfig['keywords'] as $kw) {
+                            if (!in_array($kw, $g['keywords'])) {
+                                $g['keywords'][] = $kw;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Merge signatures data
+        foreach ($requestData['signatures'] as $docType => $sig) {
+            $globalData['signatures'][$docType] = $sig;
+        }
+        
+        $globalData['version'] = $clientVersion;
+        file_put_contents($filePath, json_encode($globalData));
+        
+        return $this->response->setJSON([
+            'status' => 'success',
+            'has_update' => true,
+            'templates' => $globalData['templates'],
+            'signatures' => $globalData['signatures'],
+            'version' => $globalData['version']
+        ]);
+    }
+    
+    $hasUpdate = $globalData['version'] > $clientVersion;
+    return $this->response->setJSON([
+        'status' => 'success',
+        'has_update' => $hasUpdate,
+        'templates' => $hasUpdate ? $globalData['templates'] : null,
+        'signatures' => $hasUpdate ? $globalData['signatures'] : null,
+        'version' => $globalData['version']
+    ]);
+}
+```
+
 ### Algorithmic Safety & Self-Healing
 Built-in protection layers guard the learned model templates against manual operator mistakes (human error):
 1. **Exponential Moving Average Dampening:** Coordinate updates are adjusted gradually using the formula `(Old * 0.7) + (New * 0.3)`. A single accidental click will not drastically displace the search hotspots.
@@ -154,4 +438,3 @@ Built-in protection layers guard the learned model templates against manual oper
    delete learner.signatures[docType];
    learner.save();
    ```
-
