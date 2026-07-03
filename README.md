@@ -12,7 +12,7 @@ Library ini secara dinamis mendeteksi jenis dokumen (classification), menyaring 
 
 ### Instalasi
 ```bash
-npm install @craftthingy-digital-innovation/cty-collaborative-layout-learner-web@2.0.0
+npm install @craftthingy-digital-innovation/cty-collaborative-layout-learner-web@2.0.1
 ```
 
 ### Cara Penggunaan Client-Side (Frontend)
@@ -74,6 +74,17 @@ Sisi server menerima payload JSON:
 ```
 Jika nomor versi payload client lebih tinggi, server menggabungkan koordinat rasio kotak ($x,y$) dari templat baru menggunakan **Rata-rata Bergerak (Moving Average)**, melakukan *upsert* ke database, menaikkan nomor versi global, lalu mengembalikannya sebagai respons sukses agar diunduh oleh client lain.
 
+### Keamanan & Pemulihan Mandiri Algoritma (Self-Healing)
+Library ini dilengkapi dengan mekanisme proteksi bawaan untuk melindungi integritas model dari kesalahan manusia (human error):
+1. **Peredam Salah Klik (Moving Average Dampening):** Koreksi koordinat dilakukan secara gradual menggunakan *exponential moving average* `(Lama * 0.7) + (Baru * 0.3)`. Salah klik satu kali tidak akan merusak posisi hotspot.
+2. **Pengaman Salah Dokumen (Jaccard Guard Threshold):** Metode `refineSignature(...)` hanya menerapkan pembaruan sidik jari jika irisan kata statis menghasilkan minimal 3 kata unik. Jika user salah men-submit Kartu Keluarga ke tipe Paspor, sistem otomatis mengabaikan pembaruan tersebut demi melindungi templat Paspor yang asli.
+3. **Mekanisme Reset Memori:** Jika data templat lokal telanjur kacau, Anda bisa menghapus instansiasi memori untuk tipe dokumen tersebut secara manual:
+   ```javascript
+   delete learner.templates[docType];
+   delete learner.signatures[docType];
+   learner.save();
+   ```
+
 ---
 
 ## English
@@ -84,7 +95,7 @@ This library dynamically classifies document types, filters out dynamic personal
 
 ### Installation
 ```bash
-npm install @craftthingy-digital-innovation/cty-collaborative-layout-learner-web@2.0.0
+npm install @craftthingy-digital-innovation/cty-collaborative-layout-learner-web@2.0.1
 ```
 
 ### Client-Side JavaScript Usage
@@ -132,3 +143,15 @@ div.addEventListener('click', () => {
 // Trigger upon successful submission to filter and intersect keywords, stripping out transient inputs
 learner.refineSignature(docType, allOcrWords, imageWidth, imageHeight);
 ```
+
+### Algorithmic Safety & Self-Healing
+Built-in protection layers guard the learned model templates against manual operator mistakes (human error):
+1. **Exponential Moving Average Dampening:** Coordinate updates are adjusted gradually using the formula `(Old * 0.7) + (New * 0.3)`. A single accidental click will not drastically displace the search hotspots.
+2. **Document Signature Guard (Jaccard Guard):** The `refineSignature(...)` method only applies signature updates if the word intersection produces at least 3 unique keywords. If a user accidentally submits a completely different document (e.g., submitting a Family Card into a Passport flow), the system discards the update, preserving the integrity of the Passport model.
+3. **Template Memory Reset:** To force a clean re-learning cycle for a corrupted layout format, clear the local templates manually:
+   ```javascript
+   delete learner.templates[docType];
+   delete learner.signatures[docType];
+   learner.save();
+   ```
+
