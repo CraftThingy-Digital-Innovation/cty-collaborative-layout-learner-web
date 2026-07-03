@@ -1,0 +1,35 @@
+{
+  "name": "@craftthingy-digital-innovation/cty-collaborative-layout-learner-web",
+  "version": "1.0.0",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/CraftThingy-Digital-Innovation/cty-collaborative-layout-learner-web.git"
+  },
+  "bugs": {
+    "url": "https://github.com/CraftThingy-Digital-Innovation/cty-collaborative-layout-learner-web/issues"
+  },
+  "homepage": "https://github.com/CraftThingy-Digital-Innovation/cty-collaborative-layout-learner-web#readme",
+  "main": "./dist/cty-collaborative-layout-learner.umd.js",
+  "module": "./dist/cty-collaborative-layout-learner.es.js",
+  "exports": {
+    ".": {
+      "import": "./dist/cty-collaborative-layout-learner.es.js",
+      "require": "./dist/cty-collaborative-layout-learner.umd.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "vite build"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "vite": "^5.2.0"
+  }
+}
