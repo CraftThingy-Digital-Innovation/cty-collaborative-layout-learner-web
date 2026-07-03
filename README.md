@@ -12,7 +12,7 @@ Library ini secara dinamis mendeteksi jenis dokumen (classification), menyaring 
 
 ### Instalasi
 ```bash
-npm install @craftthingy-digital-innovation/cty-collaborative-layout-learner-web@2.0.2
+npm install @craftthingy-digital-innovation/cty-collaborative-layout-learner-web@2.0.3
 ```
 
 ### Cara Penggunaan Client-Side (Frontend)
@@ -231,7 +231,7 @@ This library dynamically classifies document types, filters out dynamic personal
 
 ### Installation
 ```bash
-npm install @craftthingy-digital-innovation/cty-collaborative-layout-learner-web@2.0.2
+npm install @craftthingy-digital-innovation/cty-collaborative-layout-learner-web@2.0.3
 ```
 
 ### Client-Side JavaScript Usage
