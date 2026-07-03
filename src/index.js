@@ -11,12 +11,130 @@ export class CollaborativeLayoutLearner extends EventTarget {
     this.storageKey = options.storageKey || 'cty_collaborative_layouts';
     this.syncInterval = options.syncInterval || 10000; // Check server every 10 seconds
     
-    // Load local templates from storage
+    // Load local templates & signatures from storage
     this.templates = JSON.parse(localStorage.getItem(this.storageKey) || '{}');
+    this.signatures = JSON.parse(localStorage.getItem(`${this.storageKey}_signatures`) || '{}');
     this.version = parseInt(localStorage.getItem(`${this.storageKey}_version`) || '0', 10);
     
     this.timer = null;
     this.apiUrl = null;
+  }
+
+  /**
+   * Automatically detects the document type from OCR words using Jaccard Similarity on the header (top 20% area).
+   * Generates a new unique hash signature if no match is found.
+   * @param {Array} allWords All detected words: [ { text, box: { x, y, width, height } } ]
+   * @param {number} imgWidth Width of the image
+   * @param {number} imgHeight Height of the image
+   * @returns {string} Detected document type
+   */
+  detectDocType(allWords, imgWidth, imgHeight) {
+    if (!allWords || !imgWidth || !imgHeight || allWords.length === 0) return 'generic_document';
+
+    // 1. Filter keywords from the top 20% header area
+    const headerWords = [];
+    allWords.forEach(word => {
+      if (!word.box) return;
+      const relY = word.box.y / imgHeight;
+      if (relY > 0.2) return; // Ignore body/footer areas
+
+      const text = word.text.toLowerCase().trim().replace(/[^a-z0-9]/g, '');
+      // Filter out empty, short words, numeric-only (like dates/numbers)
+      if (text.length < 3 || /^\d+$/.test(text)) return;
+
+      if (!headerWords.includes(text)) {
+        headerWords.push(text);
+      }
+    });
+
+    if (headerWords.length === 0) return 'generic_document';
+
+    // 2. Perform signature Jaccard matching
+    let bestDocType = null;
+    let highestMatches = 0;
+
+    Object.keys(this.signatures).forEach(docType => {
+      const sigKeywords = this.signatures[docType] || [];
+      const matches = sigKeywords.filter(sigWord => headerWords.includes(sigWord)).length;
+
+      // Expect at least 3 matches to consider it a valid document type
+      if (matches > highestMatches && matches >= 3) {
+        highestMatches = matches;
+        bestDocType = docType;
+      }
+    });
+
+    if (bestDocType) {
+      return bestDocType;
+    }
+
+    // 3. Cold Start / Unrecognized Document: Generate dynamic hash signature
+    // Sort words alphabetically, pick the first 5 unique words, and generate a hash
+    const sorted = [...headerWords].sort();
+    const signatureSeed = sorted.slice(0, 5);
+
+    // Simple string hash function
+    const strToHash = signatureSeed.join('_');
+    let hash = 0;
+    for (let i = 0; i < strToHash.length; i++) {
+      hash = (hash << 5) - hash + strToHash.charCodeAt(i);
+      hash |= 0; // Convert to 32bit integer
+    }
+    const docHash = `doc_hash_${Math.abs(hash).toString(16)}`;
+
+    // Register this new document type locally
+    this.signatures[docHash] = signatureSeed;
+    this.version++;
+    this.save();
+
+    this.dispatchEvent(new CustomEvent('new-document-type', {
+      detail: { docType: docHash, signature: signatureSeed }
+    }));
+
+    return docHash;
+  }
+
+  /**
+   * Refines a document signature by intersecting the current scan with existing keywords.
+   * This removes dynamic data like names or dates that vary across documents.
+   * @param {string} docType The document type to refine
+   * @param {Array} allWords All detected words
+   * @param {number} imgWidth Image width
+   * @param {number} imgHeight Image height
+   */
+  refineSignature(docType, allWords, imgWidth, imgHeight) {
+    if (!docType || !this.signatures[docType] || !allWords || !imgWidth || !imgHeight) return;
+
+    const headerWords = [];
+    allWords.forEach(word => {
+      if (!word.box) return;
+      const relY = word.box.y / imgHeight;
+      if (relY > 0.2) return;
+
+      const text = word.text.toLowerCase().trim().replace(/[^a-z0-9]/g, '');
+      if (text.length < 3 || /^\d+$/.test(text)) return;
+
+      if (!headerWords.includes(text)) {
+        headerWords.push(text);
+      }
+    });
+
+    if (headerWords.length === 0) return;
+
+    // Intersection operation: keep only words present in both sets
+    const currentSig = this.signatures[docType];
+    const refinedSig = currentSig.filter(word => headerWords.includes(word));
+
+    // Keep at least 3 keywords to ensure signature is not completely erased
+    if (refinedSig.length >= 3 && refinedSig.length < currentSig.length) {
+      this.signatures[docType] = refinedSig;
+      this.version++;
+      this.save();
+      
+      this.dispatchEvent(new CustomEvent('signature-refined', {
+        detail: { docType, signature: refinedSig }
+      }));
+    }
   }
 
   /**
@@ -237,15 +355,17 @@ export class CollaborativeLayoutLearner extends EventTarget {
         },
         body: JSON.stringify({
           version: this.version,
-          templates: this.templates
+          templates: this.templates,
+          signatures: this.signatures
         })
       });
 
       const result = await response.json();
       
       if (result.status === 'success' && result.has_update) {
-        // Overwrite local templates with aggregated server version
+        // Overwrite local templates & signatures with aggregated server version
         this.templates = result.templates;
+        this.signatures = result.signatures || this.signatures;
         this.version = result.version;
         this.save();
         
@@ -264,6 +384,7 @@ export class CollaborativeLayoutLearner extends EventTarget {
    */
   save() {
     localStorage.setItem(this.storageKey, JSON.stringify(this.templates));
+    localStorage.setItem(`${this.storageKey}_signatures`, JSON.stringify(this.signatures));
     localStorage.setItem(`${this.storageKey}_version`, this.version.toString());
   }
 
